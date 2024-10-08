@@ -1,0 +1,14 @@
+.vs
+Temp
+Bundles
+HybridCLRData
+Library
+Logs
+obj
+.vsconfig
+*.csproj
+*.sln
+Assets/Bundles
+Assets/GameArts
+Assets/StreamingAssets
+Assets/Res
