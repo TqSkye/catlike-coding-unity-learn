@@ -1,0 +1,178 @@
+﻿//要计算 GPU 上的位置，我们必须编写一个脚本，特别是计算着色器。通过 Assets / Create / Shader / Compute Shader 创建一个。
+//它将成为与我们的 FunctionLibrary 类相当的 GPU 类，因此也将其命名为 FunctionLibrary。虽然它被称为着色器并使用 HLSL 语法，
+//但它的功能是通用程序，而不是用于渲染的普通着色器。因此，我将该资产放在 Scripts 文件夹中。
+
+// 打开资产文件并删除其默认内容。计算着色器需要包含一个称为内核的主函数，通过 #pragma kernel 指令和名称（如曲面着色器的 #pragma surface）来表示。
+// 将此指令添加到第一行，也是目前唯一的一行，使用 FunctionKernel 名称。
+// #pragma kernel FunctionKernel
+// void FunctionKernel()
+// {
+// }
+
+#pragma kernel WaveKernel
+#pragma kernel WaveToMultiWaveKernel
+#pragma kernel WaveToRippleKernel
+#pragma kernel WaveToSphereKernel
+#pragma kernel WaveToTorusKernel
+
+#pragma kernel MultiWaveToWaveKernel
+#pragma kernel MultiWaveKernel
+#pragma kernel MultiWaveToRippleKernel
+#pragma kernel MultiWaveToSphereKernel
+#pragma kernel MultiWaveToTorusKernel
+
+#pragma kernel RippleToWaveKernel
+#pragma kernel RippleToMultiWaveKernel
+#pragma kernel RippleKernel
+#pragma kernel RippleToSphereKernel
+#pragma kernel RippleToTorusKernel
+
+#pragma kernel SphereToWaveKernel
+#pragma kernel SphereToMultiWaveKernel
+#pragma kernel SphereToRippleKernel
+#pragma kernel SphereKernel
+#pragma kernel SphereToTorusKernel
+
+#pragma kernel TorusToWaveKernel
+#pragma kernel TorusToMultiWaveKernel
+#pragma kernel TorusToRippleKernel
+#pragma kernel TorusToSphereKernel
+#pragma kernel TorusKernel
+
+// 要存储位置，我们需要访问位置缓冲区。在 HLSL 中，计算缓冲区被称为结构缓冲区。由于我们必须对其进行写入，因此需要启用读写功能的版本，即 RWStructuredBuffer。为此添加一个名为 _Positions 的着色器属性。
+// 在这种情况下，我们必须指定缓冲区的元素类型。位置是 float3 值，我们直接将其写入 RWStructuredBuffer 之后的角括号中。
+RWStructuredBuffer<float3> _Positions;
+
+// 要存储点的位置，我们需要根据线程标识符为其分配一个索引。为此，我们需要知道图形的分辨率。因此，我们需要添加一个 _Resolution 着色器属性，其 uint 类型与标识符的类型相匹配。
+uint _Resolution;
+
+// 如果我们知道图形的步长，就可以将线程标识符转换为 UV 坐标。为其添加名为 _Step 的计算机着色器属性，就像我们为曲面着色器添加 _Smoothness 一样。
+float _Step, _Time, _TransitionProgress;
+
+// 然后创建一个 GetUV 函数，将线程标识符作为参数，并以 float2 的形式返回 UV 坐标。我们可以使用与图形中循环点时相同的逻辑。将标识符的 XY 分量加上 0.5，再乘以步长，然后减去 1。
+float2 GetUV (uint3 id) {
+	return (id.xy + 0.5) * _Step - 1.0;
+}
+
+void SetPosition (uint3 id, float3 position) {
+    // 我们必须注意的一点是，我们的每个组都会计算一个 8×8 点的网格。如果图表的分辨率不是 8 的倍数，那么我们就会有一行和一列分组计算出一些超出范围的点。
+    // 这些点的索引要么会超出缓冲区，要么会与有效索引冲突，从而破坏我们的数据。
+    // 所以这里需要小于分辨率，就算浪费多余的存储
+	if (id.x < _Resolution && id.y < _Resolution) {
+		_Positions[id.x + id.y * _Resolution] = position;
+	}
+}
+
+#define PI 3.14159265358979323846
+
+float3 Wave (float u, float v, float t) {
+	float3 p;
+	p.x = u;
+	p.y = sin(PI * (u + v + t));
+	p.z = v;
+	return p;
+}
+
+float3 MultiWave (float u, float v, float t) {
+	float3 p;
+	p.x = u;
+	p.y = sin(PI * (u + 0.5 * t));
+	p.y += 0.5 * sin(2.0 * PI * (v + t));
+	p.y += sin(PI * (u + v + 0.25 * t));
+	p.y *= 1.0 / 2.5;
+	p.z = v;
+	return p;
+}
+
+float3 Ripple (float u, float v, float t) {
+	float d = sqrt(u * u + v * v);
+	float3 p;
+	p.x = u;
+	p.y = sin(PI * (4.0 * d - t));
+	p.y /= 1.0 + 10.0 * d;
+	p.z = v;
+	return p;
+}
+
+float3 Sphere (float u, float v, float t) {
+	float r = 0.9 + 0.1 * sin(PI * (12.0 * u + 8.0 * v + t));
+	float s = r * cos(0.5 * PI * v);
+	float3 p;
+	p.x = s * sin(PI * u);
+	p.y = r * sin(0.5 * PI * v);
+	p.z = s * cos(PI * u);
+	return p;
+}
+
+float3 Torus (float u, float v, float t) {
+	float r1 = 0.7 + 0.1 * sin(PI * (8.0 * u + 0.5 * t));
+	float r2 = 0.15 + 0.05 * sin(PI * (16.0 * u + 8.0 * v + 3.0 * t));
+	float s = r2 * cos(PI * v) + r1;
+	float3 p;
+	p.x = s * sin(PI * u);
+	p.y = r2 * sin(PI * v);
+	p.z = s * cos(PI * u);
+	return p;
+}
+
+// 现在我们必须为每个图形函数创建一个单独的核函数，但这需要重复编写大量代码。我们可以创建一个着色器宏来避免这种情况，就像我们之前定义的 PI 一样。
+// 首先，在 FunctionKernel 函数上方一行写入 #define KERNEL_FUNCTION。
+// 这些定义通常只适用于同一行中写在后面的内容，但我们可以在除最后一行外的每一行末尾添加一个反斜杠，将其扩展到多行。
+// 现在，当我们编写 KERNEL_FUNCTION 时，编译器将用 FunctionKernel 函数的代码替换它。为使其适用于任意函数，我们可以为宏添加一个参数。
+// 这就像函数的参数列表一样，但不带类型，开头的括号必须与宏名相连。给宏添加一个函数参数，并用它代替 Wave 的显式调用。
+// 我们还必须更改内核函数的名称。我们将使用函数参数作为前缀，然后是 Kernel。但我们必须将函数标签分开，否则它将无法被识别为着色器参数。用 ## 宏连接操作符将两个词连接起来。
+// 如 #pragma kernel WaveKernel  ==>  function = Wave ==> function##Kernel = WaveKernel
+
+// 当 GPU 收到执行计算着色器功能的指令时，它会将其工作分成若干组，然后调度它们独立并行运行。每个组又由若干个线程组成，这些线程执行相同的计算，但输入不同。
+// 我们必须在内核函数中添加 numthreads 属性，指定每组应该有多少个线程。它需要三个整数参数。最简单的方法是将三个参数都设为 1，这样每组只运行一个线程。
+// numthreads 的三个参数可用于按一维、二维或三维组织线程。例如，(64, 1, 1) 可以在一个维度上组织 64 个线程，而 (8, 8, 1) 则可以组织相同数量的线程，
+// 但以二维 8×8 平方网格的形式呈现。由于我们是根据二维 UV 坐标来定义点的，因此我们使用后一个选项。
+// 我们必须明确指出该参数用于线程标识符。为此，我们要在参数名称后写入冒号，并紧跟 SV_DispatchThreadID 着色器语义关键字。
+#define KERNEL_FUNCTION(function) \
+	[numthreads(8, 8, 1)] \
+	void function##Kernel (uint3 id: SV_DispatchThreadID) { \
+		float2 uv = GetUV(id); \
+		SetPosition(id, function(uv.x, uv.y, _Time)); \
+	}
+
+#define KERNEL_MORPH_FUNCTION(functionA, functionB) \
+	[numthreads(8, 8, 1)] \
+	void functionA##To##functionB##Kernel (uint3 id: SV_DispatchThreadID) { \
+		float2 uv = GetUV(id); \
+		float3 position = lerp( \
+			functionA(uv.x, uv.y, _Time), functionB(uv.x, uv.y, _Time), \
+			_TransitionProgress \
+		); \
+		SetPosition(id, position); \
+	}
+
+KERNEL_FUNCTION(Wave)
+KERNEL_FUNCTION(MultiWave)
+KERNEL_FUNCTION(Ripple)
+KERNEL_FUNCTION(Sphere)
+KERNEL_FUNCTION(Torus)
+
+KERNEL_MORPH_FUNCTION(Wave, MultiWave);
+KERNEL_MORPH_FUNCTION(Wave, Ripple);
+KERNEL_MORPH_FUNCTION(Wave, Sphere);
+KERNEL_MORPH_FUNCTION(Wave, Torus);
+
+KERNEL_MORPH_FUNCTION(MultiWave, Wave);
+KERNEL_MORPH_FUNCTION(MultiWave, Ripple);
+KERNEL_MORPH_FUNCTION(MultiWave, Sphere);
+KERNEL_MORPH_FUNCTION(MultiWave, Torus);
+
+KERNEL_MORPH_FUNCTION(Ripple, Wave);
+KERNEL_MORPH_FUNCTION(Ripple, MultiWave);
+KERNEL_MORPH_FUNCTION(Ripple, Sphere);
+KERNEL_MORPH_FUNCTION(Ripple, Torus);
+
+KERNEL_MORPH_FUNCTION(Sphere, Wave);
+KERNEL_MORPH_FUNCTION(Sphere, MultiWave);
+KERNEL_MORPH_FUNCTION(Sphere, Ripple);
+KERNEL_MORPH_FUNCTION(Sphere, Torus);
+
+KERNEL_MORPH_FUNCTION(Torus, Wave);
+KERNEL_MORPH_FUNCTION(Torus, MultiWave);
+KERNEL_MORPH_FUNCTION(Torus, Ripple);
+KERNEL_MORPH_FUNCTION(Torus, Sphere);
